@@ -258,8 +258,8 @@
       <div class="grid g3 stages">${scopeStages().map((s) => {
         const b = res.before.byStage[s] || 0, a = res.after.byStage[s] || 0;
         return `<div class="card stage-card"><i class="bar s${stIdx(s)}"></i><div class="nm">${esc(s)}</div>
-          <div class="big num">${a}</div><div class="muted">было ${b} · ${delta(a - b, null)}</div>
-          <div class="flows"><span class="pos">+${inn[s] || 0} пришло</span><span class="muted">−${out[s] || 0} ушло</span></div></div>`;
+          <div class="big num">${a}<span class="dlt">${delta(a - b, 'up')}</span></div>
+          <div class="flows muted"><span>+${inn[s] || 0} пришло</span><span>−${out[s] || 0} ушло</span></div></div>`;
       }).join('')}</div>
       <div class="card mt"><div class="card-h"><h2>Куда перешли задачи</h2></div><div class="card-b">${matrixHtml(res)}
         ${res.outsideNew ? `<p class="sub" style="margin:10px 0 0">Ещё ${res.outsideNew} новых задач появилось вне отслеживаемых этапов (например, «В работе») — они не в счёте.</p>` : ''}</div></div>
@@ -272,8 +272,7 @@
           ${newOnes.length ? `<div class="tw"><table><thead><tr><th>Объект</th><th>Поисковик</th><th>Этап</th></tr></thead><tbody>
           ${newOnes.slice(0, 10).map((e) => `<tr class="click" data-obj="${e.id}"><td class="addr"><span class="addr-t">${esc(short(e.row.address))}</span><span class="sub num">№ ${e.id}</span></td><td>${esc(e.who)}</td><td>${trans(e.fromStage, e.toStage)}</td></tr>`).join('')}
           </tbody></table></div>` : '<div class="empty">Никто не пришёл в этапы</div>'}</div>
-      </div>
-      <div class="card mt"><div class="card-h"><h2>Динамика по выгрузкам</h2>${legend()}</div><div class="card-b">${trendHtml(C.trend(state.snaps, state.scope))}</div></div>`;
+      </div>`;
   }
 
   // «возврат» = откат внутри отслеживаемых этапов + уход на более ранний этап за их пределами
