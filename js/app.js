@@ -9,7 +9,7 @@
     snaps: [], scope: loadScope(), cmp: null,
     sort: { key: 'activity', dir: -1 }, pq: '',
     of: { q: '', who: '', kinds: new Set(['new', 'enter', 'advance', 'back', 'exit']) },
-    drawer: null, pending: null, skippedLocal: 0, idbOff: false,
+    drawer: null, pending: null, pop: null, skippedLocal: 0, idbOff: false,
   };
 
   /* ---------- утилиты ---------- */
@@ -121,6 +121,10 @@
   }
 
   /* ---------- оболочка ---------- */
+  function ico(n) {
+    const p = { filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>', history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/>', upload: '<path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 20h16"/>' }[n];
+    return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+  }
   function logoSvg() { return '<svg width="18" height="18" viewBox="0 0 32 32"><path d="M5 7h22l-8.5 10v7l-5 2.5V17z" fill="#fff"/></svg>'; }
 
   function route() { const h = (location.hash || '#/overview').replace(/^#\//, '').split('/'); return { page: h[0] || 'overview', arg: decodeURIComponent(h.slice(1).join('/')) }; }
@@ -134,25 +138,27 @@
     })() : '';
     $app.innerHTML = `
       <header class="top"><div class="top-in">
-        <a class="brand" href="#/overview"><span class="logo">${logoSvg()}</span><b>ВВ Геоаналитика</b><span>Воронка поиска</span></a>
+        <a class="brand" href="#/overview"><span class="logo">${logoSvg()}</span><b>Воронка поиска</b></a>
         <nav class="nav" id="nav"></nav>
         <div class="top-r">${cmpSel}
-          <label class="btn btn-primary" for="fileIn">Загрузить выгрузку</label>
+          <button class="btn" data-pop="scope" title="Какие объекты считаем">${ico('filter')}Фильтры</button>
+          <button class="btn icon" data-pop="hist" title="История выгрузок" aria-label="История выгрузок">${ico('history')}</button>
+          <label class="btn btn-primary" for="fileIn">${ico('upload')}Загрузить выгрузку</label>
           <input type="file" id="fileIn" accept=".xlsx,.xls" class="hide">
         </div>
       </div></header>
-      <main id="view"></main><div id="drawerHost"></div>`;
-    renderView();
+      <main id="view"></main><div id="drawerHost"></div><div id="popHost"></div><div id="modalHost"></div>`;
+    renderView(); renderPop(); renderModal();
   }
 
   function renderView() {
     const r = route();
-    const nav = [['overview', 'Обзор'], ['people', 'Сотрудники'], ['objects', 'Объекты'], ['uploads', 'Выгрузки']];
+    const nav = [['overview', 'Обзор'], ['people', 'Сотрудники'], ['objects', 'Объекты']];
     const active = r.page === 'person' ? 'people' : r.page;
     document.getElementById('nav').innerHTML = nav.map(([k, l]) => `<a href="#/${k}" class="${k === active ? 'on' : ''}">${l}</a>`).join('');
     const v = document.getElementById('view');
-    if (!state.snaps.length && r.page !== 'uploads') { v.innerHTML = emptyState(); renderDrawer(); return; }
-    const fn = { overview: pgOverview, people: pgPeople, person: pgPerson, objects: pgObjects, uploads: pgUploads }[r.page] || pgOverview;
+    if (!state.snaps.length) { v.innerHTML = emptyState(); renderDrawer(); return; }
+    const fn = { overview: pgOverview, people: pgPeople, person: pgPerson, objects: pgObjects }[r.page] || pgOverview;
     v.innerHTML = fn(r.arg);
     if (r.page === 'people') renderPeopleBody();
     if (r.page === 'objects') renderObjList();
@@ -240,12 +246,12 @@
     const newOnes = res.events.filter((e) => e.kind === 'new' || e.kind === 'enter');
     return `
       <div class="page-h"><div><h1>Что изменилось: ${fd(res.A.date)} → ${fd(res.B.date)}</h1>
-        <p>${res.days} ${plural(res.days, ['день', 'дня', 'дней'])} между выгрузками · ${esc(scopeLine())} · <a href="#/uploads">изменить область</a></p></div>
+        <p>${res.days} ${plural(res.days, ['день', 'дня', 'дней'])} между выгрузками · ${esc(scopeLine())} · <button class="linkbtn" data-pop="scope">изменить фильтры</button></p></div>
         <button class="btn" data-act="report">Скачать отчёт .xlsx</button></div>
       <div class="grid g5">
         ${kpi('В отслеживаемых этапах', res.after.total, `было ${res.before.total} · ${delta(res.after.total - res.before.total, null)}`)}
         ${kpi('Пришли в этапы', arrived, `${res.n.enter} из ранних этапов · ${res.n.new} новых задач`, 'hl')}
-        ${kpi('Продвинулись дальше', res.n.advance, res.n.back ? `и ${res.n.back} откатились назад` : 'откатов нет')}
+        ${kpi('Продвинулись дальше', res.n.advance, backCount(res) ? `и ${backCount(res)} вернулись на ранний этап` : 'возвратов нет')}
         ${kpi('Выбыли из этапов', res.n.exit, exitBreak(res))}
         ${kpi('Просрочено по сроку', res.after.overdue, `было ${res.before.overdue} · ${delta(od, 'down')}`)}
       </div>
@@ -271,6 +277,8 @@
       <div class="card mt"><div class="card-h"><h2>Динамика по выгрузкам</h2>${legend()}</div><div class="card-b">${trendHtml(C.trend(state.snaps, state.scope))}</div></div>`;
   }
 
+  // «возврат» = откат внутри отслеживаемых этапов + уход на более ранний этап за их пределами
+  const backCount = (res) => res.events.filter((e) => e.kind === 'back' || (e.kind === 'exit' && e.sub === 'behind')).length;
   const act = (p) => p.n.new + p.n.enter + p.n.advance + p.n.back + p.n.exit;
   function exitBreak(res) {
     const c = { gone: 0, beyond: 0, behind: 0, filter: 0 };
@@ -440,51 +448,59 @@
       <h3 style="margin:24px 0 10px">Данные из выгрузки ${fd(last.date)}</h3><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div></aside>`;
   }
 
-  /* ---------- Выгрузки ---------- */
+  /* ---------- Фильтры, история, окно загрузки ---------- */
   function allValues(key) {
     const set = new Set();
     state.snaps.forEach((s) => s.rows.forEach((r) => { const v = key === 'region' ? C.normRegion(r.region) : r[key]; if (v) set.add(v); }));
     return [...set].sort((a, b) => String(a).localeCompare(String(b), 'ru'));
   }
 
-  function pgUploads() {
-    const s = sorted();
-    const checks = (key, vals, cur, base) => `<div class="checks">${vals.map((v) => `<label><input type="checkbox" data-scope="${key}" value="${esc(v)}" ${cur.includes(v) ? 'checked' : ''}>${esc(v)}</label>`).join('')}</div>`;
+  function popScope() {
+    const checks = (key, vals, cur) => `<div class="checks">${vals.map((v) => `<label><input type="checkbox" data-scope="${key}" value="${esc(v)}" ${cur.includes(v) ? 'checked' : ''}>${esc(v)}</label>`).join('')}</div>`;
     const stageVals = C.STAGES.concat(allValues('stage').filter((x) => !C.STAGES.includes(x)));
     const regions = ['Москва', 'МО', 'СПб', 'ЛО', ...allValues('region').filter((x) => !['Москва', 'МО', 'СПб', 'ЛО'].includes(x))];
-    return `
-      <div class="page-h"><div><h1>Выгрузки</h1><p>Раз в неделю загружайте новый файл из первой формы — динамика пересчитается сама.</p></div></div>
-      <div class="card"><div class="card-b">
-        <div class="drop" id="drop"><b>Перетащите xlsx сюда или нажмите, чтобы выбрать</b><span class="muted">Файл «Открытия…» из первой формы. Лучше выгружать без фильтра по этапам (все этапы), тогда видно, куда ушла задача.</span></div>
-        <div id="pending">${state.pending ? pendingHtml() : ''}</div>
-      </div></div>
-      <div class="card mt"><div class="card-h"><h2>Загруженные выгрузки</h2></div>
-        <div class="tw"><table><thead><tr><th>Дата выгрузки</th><th class="r">Задач в файле</th><th class="r">В отслеживаемых этапах</th><th>Файл</th><th>Где хранится</th><th></th></tr></thead><tbody>
-        ${s.map((x) => { const c = C.stageCounts(x.rows, C.mkSets(state.scope), x.date); const loc = state.localDates.has(x.date), vlt = state.vaultDates.has(x.date);
-          return `<tr><td><b>${fdy(x.date)}</b></td><td class="r num">${x.rows.length}</td><td class="r num">${c.total}</td><td class="sub">${esc(x.fileName || '')}</td>
-          <td>${loc ? (vlt ? '<span class="chip">этот браузер (заменяет опубликованную)</span>' : '<span class="chip od" style="background:var(--orange-soft);color:var(--orange-ink)">только этот браузер</span>') : '<span class="chip new">опубликована для всех</span>'}</td>
-          <td class="r">${loc ? `<button class="btn btn-sm btn-danger" data-delsnap="${x.date}">Удалить</button>` : ''}</td></tr>`; }).join('') || '<tr><td colspan="6" class="empty">Пока пусто</td></tr>'}
-        </tbody></table></div></div>
-      <div class="card mt"><div class="card-h"><h2>Область отслеживания</h2></div><div class="card-b grid" style="gap:16px">
-        <p class="muted" style="margin:0">Какие объекты считаются «в воронке». Сейчас — то же, что вручную делает Анастасия: регионы, бренды, «Новая ТТ» и три этапа. Изменения применяются сразу.</p>
+    return `<div class="pop-h"><h3>Какие объекты считаем</h3><button class="x" data-act="closePop" aria-label="Закрыть">×</button></div>
+      <div class="pop-b grid" style="gap:14px">
         <div class="fld"><b>Регионы</b>${checks('regions', regions, state.scope.regions)}</div>
         <div class="fld"><b>Бренды</b>${checks('brands', allValues('brand'), state.scope.brands)}</div>
         <div class="fld"><b>Статус ТТ</b>${checks('tt', allValues('tt'), state.scope.tt)}</div>
-        <div class="fld"><b>Этапы, которые отслеживаем</b>${checks('stages', stageVals, state.scope.stages)}</div>
+        <div class="fld"><b>Этапы</b>${checks('stages', stageVals, state.scope.stages)}</div>
+        <div class="sub">Изменения применяются сразу. Сейчас — как у Анастасии вручную: 4 региона, ВкусВилл и Грейстор, «Новая ТТ», три этапа.</div>
         <div><button class="btn btn-sm" data-act="resetScope">Вернуть как было</button></div>
-      </div></div>
-      <div class="card mt"><div class="card-h"><h2>Поделиться с коллегами</h2></div><div class="card-b grid" style="gap:12px">
-        <p class="muted" style="margin:0">Выгрузки, загруженные кнопкой, хранятся (в зашифрованном виде) только в этом браузере. Чтобы их увидели остальные, скачайте <b>vault.json</b> и замените им файл в репозитории — через минуту сайт обновится.</p>
-        ${state.skippedLocal ? `<div class="note warn">${state.skippedLocal} локальных записей зашифрованы прежним паролем и не открылись.</div>` : ''}
-        ${state.idbOff ? '<div class="note warn">Браузер не даёт сохранять данные (приватный режим?). Загруженные выгрузки пропадут после закрытия вкладки — скачайте vault.json.</div>' : ''}
-        <div class="row"><input type="password" id="newPw" placeholder="Новый пароль (необязательно)" autocomplete="new-password" style="width:260px"><button class="btn" data-act="exportVault">Скачать vault.json</button></div>
-        <p class="sub" style="margin:0">Оставьте поле пустым — пароль останется прежним. Если ввести новый, им будет зашифрован новый файл; старый пароль после публикации перестанет работать.</p>
-      </div></div>`;
+      </div>`;
   }
 
-  function pendingHtml() {
+  function popHist() {
+    const S = C.mkSets(state.scope);
+    const rows = sorted().slice().reverse().map((x) => {
+      const c = C.stageCounts(x.rows, S, x.date);
+      const loc = state.localDates.has(x.date), vlt = state.vaultDates.has(x.date);
+      const where = loc ? (vlt ? 'заменена в этом браузере' : 'только в этом браузере') : 'у всех';
+      return `<tr><td><b>${fdy(x.date)}</b><div class="sub">${where}</div></td><td class="r num">${x.rows.length}</td><td class="r num">${c.total}</td><td class="r">${loc ? `<button class="btn btn-sm btn-danger" data-delsnap="${x.date}" title="Удалить из этого браузера">×</button>` : ''}</td></tr>`;
+    }).join('');
+    return `<div class="pop-h"><h3>История выгрузок</h3><button class="x" data-act="closePop" aria-label="Закрыть">×</button></div>
+      <div class="pop-b">
+        <table><thead><tr><th>Дата</th><th class="r">Задач</th><th class="r">В этапах</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Пока пусто</td></tr>'}</tbody></table>
+        ${state.skippedLocal ? `<div class="note warn" style="margin-top:10px">${state.skippedLocal} локальных записей зашифрованы прежним паролем и не открылись.</div>` : ''}
+        ${state.idbOff ? '<div class="note warn" style="margin-top:10px">Браузер не сохраняет данные (приватный режим?). Загруженное пропадёт после закрытия вкладки.</div>' : ''}
+        <details style="margin-top:14px"><summary class="sub" style="cursor:pointer">Опубликовать для всех и сменить пароль</summary>
+          <p class="sub">Выгрузки, загруженные кнопкой, лежат только в этом браузере. Скачайте vault.json и замените им файл в репозитории — тогда их увидят все. Поле пароля заполняйте только если хотите сменить пароль.</p>
+          <div class="row"><input type="password" id="newPw" placeholder="Новый пароль (необязательно)" autocomplete="new-password" style="width:230px"><button class="btn btn-sm" data-act="exportVault">Скачать vault.json</button></div>
+        </details>
+      </div>`;
+  }
+
+  function renderPop() {
+    const host = document.getElementById('popHost'); if (!host) return;
+    document.querySelectorAll('[data-pop]').forEach((b) => b.classList.toggle('on', b.dataset.pop === state.pop));
+    if (!state.pop) { host.innerHTML = ''; return; }
+    host.innerHTML = `<div class="pop" role="dialog">${state.pop === 'scope' ? popScope() : popHist()}</div>`;
+  }
+
+  function modalBody() {
     const p = state.pending;
-    if (p.error) return `<div class="note bad" style="margin-top:12px">${esc(p.error)}</div>`;
+    if (p.loading) return '<p class="muted">Читаю файл…</p>';
+    if (p.error) return `<div class="note bad">${esc(p.error)}</div><div class="row" style="margin-top:14px"><button class="btn" data-act="cancelSnap">Закрыть</button></div>`;
     const S = C.mkSets(state.scope), cnt = C.stageCounts(p.rows, S, p.date || '9999-12-31');
     const warns = [];
     const prevSnap = sorted().filter((x) => x.date < (p.date || '9999')).pop();
@@ -495,23 +511,28 @@
     }
     const unk = [...new Set(p.rows.map((r) => r.stage).filter((x) => x && !C.STAGES.includes(x)))];
     if (unk.length) warns.push('Неизвестные этапы: ' + unk.join(', ') + '. Они посчитаются как «дальше по воронке» — сообщите, чтобы добавить их в порядок этапов.');
-    if (!cnt.total) warns.push('В отслеживаемые этапы не попало ни одного объекта. Проверьте область отслеживания ниже.');
+    if (!cnt.total) warns.push('В отслеживаемые этапы не попало ни одного объекта. Проверьте фильтры наверху.');
     if (p.absent.length) warns.push('В файле нет необязательных колонок: ' + p.absent.join(', ') + '.');
     const exists = p.date && state.snaps.some((x) => x.date === p.date);
-    return `<div style="margin-top:14px" class="grid" >
-      <div><b>${esc(p.fileName)}</b><div class="muted">${p.rows.length} задач · в отслеживаемых этапах ${cnt.total} (${scopeStages().map((s) => s + ' ' + (cnt.byStage[s] || 0)).join(' · ')})${p.skipped ? ' · пропущено ' + p.skipped + ' строк-заголовков групп' : ''}</div></div>
-      <div class="row"><div class="fld"><b>Дата, на которую сделана выгрузка</b><input type="date" id="snapDate" value="${p.date || ''}" data-act="snapDate"></div></div>
+    return `<div class="grid" style="gap:12px">
+      <div><b>${esc(p.fileName)}</b><div class="muted">${p.rows.length} задач · в отслеживаемых этапах ${cnt.total} (${scopeStages().map((s) => s + ' ' + (cnt.byStage[s] || 0)).join(' · ')})</div></div>
+      <div class="fld"><b>Дата, на которую сделана выгрузка</b><input type="date" id="snapDate" value="${p.date || ''}" data-act="snapDate" style="width:180px"></div>
       ${exists ? `<div class="note warn">Выгрузка за ${fdy(p.date)} уже есть — при сохранении она будет заменена.</div>` : ''}
       ${warns.map((w) => `<div class="note warn">${esc(w)}</div>`).join('')}
       <div class="row"><button class="btn btn-primary" data-act="saveSnap" ${p.date ? '' : 'disabled'}>Сохранить выгрузку</button><button class="btn" data-act="cancelSnap">Отмена</button></div></div>`;
   }
 
+  function renderModal() {
+    const host = document.getElementById('modalHost'); if (!host) return;
+    if (!state.pending) { host.innerHTML = ''; return; }
+    host.innerHTML = `<div class="veil" data-act="cancelSnap"></div><div class="modal" role="dialog" aria-label="Загрузка выгрузки"><div class="pop-h"><h3>Загрузка выгрузки</h3><button class="x" data-act="cancelSnap" aria-label="Закрыть">×</button></div><div class="pop-b">${modalBody()}</div></div>`;
+  }
+
   /* ---------- загрузка файла ---------- */
   async function handleFile(file) {
     if (!file) return;
-    if (location.hash !== '#/uploads') location.hash = '#/uploads';
-    const show = () => { const h = document.getElementById('pending'); if (h) h.innerHTML = state.pending ? pendingHtml() : ''; };
-    state.pending = { error: 'Читаю файл…' }; setTimeout(show, 0);
+    state.pop = null; renderPop();
+    state.pending = { loading: true }; renderModal();
     try {
       if (!window.XLSX) throw new Error('Не загрузилась библиотека чтения xlsx (нужен интернет при первом открытии).');
       const buf = await file.arrayBuffer();
@@ -533,7 +554,7 @@
     } catch (e) {
       state.pending = { error: e.message || String(e) };
     }
-    renderView();
+    renderModal();
   }
 
   async function saveSnap() {
@@ -593,6 +614,8 @@
   document.addEventListener('click', (e) => {
     const t = e.target;
     let el;
+    if ((el = t.closest('[data-pop]'))) { state.pop = state.pop === el.dataset.pop ? null : el.dataset.pop; renderPop(); return; }
+    if (state.pop && !t.closest('.pop')) { state.pop = null; renderPop(); }
     if ((el = t.closest('[data-obj]'))) { state.drawer = +el.dataset.obj; renderDrawer(); return; }
     if ((el = t.closest('[data-person]'))) { location.hash = '#/person/' + encodeURIComponent(el.dataset.person); return; }
     if ((el = t.closest('[data-sort]'))) { const k = el.dataset.sort; state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : (k === 'name' ? 1 : -1) }; renderPeopleBody(); return; }
@@ -603,10 +626,11 @@
       const a = el.dataset.act;
       if (a === 'closeDrawer') { state.drawer = null; renderDrawer(); }
       else if (a === 'saveSnap') saveSnap();
-      else if (a === 'cancelSnap') { state.pending = null; renderView(); }
+      else if (a === 'cancelSnap') { state.pending = null; renderModal(); }
+      else if (a === 'closePop') { state.pop = null; renderPop(); }
       else if (a === 'exportVault') exportVault();
       else if (a === 'report') report();
-      else if (a === 'resetScope') { state.scope = JSON.parse(JSON.stringify(C.DEFAULT_SCOPE)); saveScope(); cmpCache = null; renderView(); }
+      else if (a === 'resetScope') { state.scope = JSON.parse(JSON.stringify(C.DEFAULT_SCOPE)); saveScope(); cmpCache = null; renderView(); renderPop(); }
       return;
     }
     if (t.closest('#drop')) document.getElementById('fileIn').click();
@@ -621,12 +645,14 @@
       state.cmp = n; renderShell(); return;
     }
     if (t.dataset.act === 'owho') { state.of.who = t.value; renderObjList(); return; }
-    if (t.dataset.act === 'snapDate') { if (state.pending) { state.pending.date = t.value; renderView(); } return; }
+    if (t.dataset.act === 'snapDate') { if (state.pending) { state.pending.date = t.value; renderModal(); } return; }
     if (t.dataset.scope) {
       const k = t.dataset.scope, set = new Set(state.scope[k]);
       t.checked ? set.add(t.value) : set.delete(t.value);
       state.scope[k] = [...set]; saveScope(); cmpCache = null;
-      const y = window.scrollY; renderView(); window.scrollTo(0, y);
+      const y = window.scrollY, pp = document.querySelector('.pop'), py = pp ? pp.scrollTop : 0;
+      renderView(); renderPop(); window.scrollTo(0, y);
+      const np = document.querySelector('.pop'); if (np) np.scrollTop = py;
     }
   });
 
@@ -636,7 +662,12 @@
     if (t.dataset.act === 'oq') { state.of.q = t.value; renderObjList(); }
   });
 
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.drawer) { state.drawer = null; renderDrawer(); } });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (state.pending) { state.pending = null; renderModal(); }
+    else if (state.pop) { state.pop = null; renderPop(); }
+    else if (state.drawer) { state.drawer = null; renderDrawer(); }
+  });
 
   document.addEventListener('dragover', (e) => { const d = e.target.closest && e.target.closest('#drop'); if (d) { e.preventDefault(); d.classList.add('over'); } });
   document.addEventListener('dragleave', (e) => { const d = e.target.closest && e.target.closest('#drop'); if (d) d.classList.remove('over'); });
