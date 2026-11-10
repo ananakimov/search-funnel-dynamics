@@ -8,8 +8,8 @@
     key: null, saltId: null, vaultDates: new Set(), localDates: new Set(),
     snaps: [], scope: loadScope(), cmp: null,
     sort: { key: 'activity', dir: -1 }, pq: '',
-    of: { q: '', who: '', kinds: new Set(['new', 'enter', 'advance', 'back', 'exit']) },
-    drawer: null, pending: null, pop: null, skippedLocal: 0, idbOff: false,
+    of: { q: '', who: '', kinds: new Set(['arrived', 'advance', 'back', 'exit']) },
+    drawer: null, pending: null, pop: null, onlyMoved: false, skippedLocal: 0, idbOff: false,
   };
 
   /* ---------- утилиты ---------- */
@@ -245,8 +245,7 @@
     const people = res.people.slice().sort((a, b) => act(b) - act(a)).slice(0, 8);
     const newOnes = res.events.filter((e) => e.kind === 'new' || e.kind === 'enter');
     return `
-      <div class="page-h"><div><h1>Что изменилось: ${fd(res.A.date)} → ${fd(res.B.date)}</h1>
-        <p>${res.days} ${plural(res.days, ['день', 'дня', 'дней'])} между выгрузками · ${esc(scopeLine())} · <button class="linkbtn" data-pop="scope">изменить фильтры</button></p></div>
+      <div class="page-h"><h1>Обзор</h1>
         <button class="btn" data-act="report">Скачать отчёт .xlsx</button></div>
       <div class="grid g5">
         ${kpi('В отслеживаемых этапах', res.after.total, `было ${res.before.total} · ${delta(res.after.total - res.before.total, null)}`)}
@@ -269,7 +268,7 @@
           <div class="tw"><table><thead><tr><th>Сотрудник</th><th class="r">Было → стало</th><th class="r">Пришли</th><th class="r">Продвинули</th><th class="r">Выбыли</th></tr></thead><tbody>
           ${people.map((p) => `<tr class="click" data-person="${esc(p.name)}"><td>${esc(p.name)}</td><td class="r num">${p.before.total} → ${p.after.total}</td><td class="r num">${p.n.new + p.n.enter || '·'}</td><td class="r num">${p.n.advance || '·'}</td><td class="r num">${p.n.exit || '·'}</td></tr>`).join('')}
           </tbody></table></div></div>
-        <div class="card"><div class="card-h"><h2>Пришли в этапы (${newOnes.length})</h2><a class="btn btn-sm" href="#/objects" data-kinds="new,enter">Все</a></div>
+        <div class="card"><div class="card-h"><h2>Пришли в этапы (${newOnes.length})</h2><a class="btn btn-sm" href="#/objects" data-kinds="arrived">Все</a></div>
           ${newOnes.length ? `<div class="tw"><table><thead><tr><th>Объект</th><th>Поисковик</th><th>Этап</th></tr></thead><tbody>
           ${newOnes.slice(0, 10).map((e) => `<tr class="click" data-obj="${e.id}"><td class="addr"><span class="addr-t">${esc(short(e.row.address))}</span><span class="sub num">№ ${e.id}</span></td><td>${esc(e.who)}</td><td>${trans(e.fromStage, e.toStage)}</td></tr>`).join('')}
           </tbody></table></div>` : '<div class="empty">Никто не пришёл в этапы</div>'}</div>
@@ -310,7 +309,8 @@
   function pgPeople() {
     const res = getCmp();
     return `<div class="page-h"><div><h1>Сотрудники</h1><p>${res ? `Изменения за ${fd(res.A.date)} → ${fd(res.B.date)}. Нажмите на фамилию, чтобы открыть карточку.` : 'Нажмите на фамилию, чтобы открыть карточку.'}</p></div></div>
-      <div class="bar-f"><input type="search" id="pq" placeholder="Найти сотрудника" value="${esc(state.pq)}" data-act="pq"></div>
+      <div class="bar-f"><input type="search" id="pq" placeholder="Найти сотрудника" value="${esc(state.pq)}" data-act="pq">
+        ${res ? `<label class="checks"><label><input type="checkbox" data-act="onlyMoved" ${state.onlyMoved ? 'checked' : ''}>Отобразить только с движением</label></label>` : ''}</div>
       <div class="card" id="peopleBody"></div>`;
   }
 
@@ -328,6 +328,7 @@
     let rows = peopleRows();
     const q = state.pq.trim().toLowerCase();
     if (q) rows = rows.filter((p) => p.name.toLowerCase().includes(q));
+    if (res && state.onlyMoved) rows = rows.filter((p) => act(p) > 0); // движение = пришёл / продвинулся / откат / выбыл
     const k = state.sort.key, d = state.sort.dir;
     const val = { name: (p) => p.name, before: (p) => p.before.total, after: (p) => p.after.total, delta: (p) => p.dTotal, arrived: (p) => p.arrived, advance: (p) => p.n.advance, back: (p) => p.n.back, exit: (p) => p.n.exit, same: (p) => p.n.same, od: (p) => p.od, activity: (p) => p.act * 1000 + p.after.total }[k] || ((p) => p.act);
     rows.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * d || a.name.localeCompare(b.name, 'ru'); });
@@ -383,9 +384,12 @@
   }
 
   /* ---------- Объекты ---------- */
+  // кнопки-фильтры; «Новые» — часть «Пришли в этапы», поэтому кнопки могут перекрываться
+  const MATCH = { arrived: (e) => e.kind === 'new' || e.kind === 'enter', new: (e) => e.kind === 'new', advance: (e) => e.kind === 'advance', back: (e) => e.kind === 'back', exit: (e) => e.kind === 'exit', same: (e) => e.kind === 'same' };
   function pgObjects() {
     const res = getCmp();
-    const kinds = [['new', 'Новые'], ['enter', 'Пришли в этап'], ['advance', 'Продвинулись'], ['back', 'Откат'], ['exit', 'Выбыли'], ['same', 'Без движения']];
+    // «Пришли в этапы» = новые задачи + пришедшие из ранних этапов — как на карточке в Обзоре
+    const kinds = [['arrived', 'Пришли в этапы'], ['new', 'Новые'], ['advance', 'Продвинулись'], ['back', 'Откат'], ['exit', 'Выбыли'], ['same', 'Без движения']];
     const who = [...new Set((res ? res.events.map((e) => e.who) : latest().rows.map((r) => C.person(r))))].sort((a, b) => a.localeCompare(b, 'ru'));
     return `<div class="page-h"><div><h1>Объекты</h1><p>${res ? `Что произошло с каждым объектом за ${fd(res.A.date)} → ${fd(res.B.date)}. Нажмите на строку — откроется история статусов.` : 'Объекты в отслеживаемых этапах.'}</p></div></div>
       <div class="bar-f"><input type="search" id="oq" placeholder="Адрес или номер задачи" value="${esc(state.of.q)}" data-act="oq">
@@ -398,7 +402,7 @@
     const host = document.getElementById('objList'); if (!host) return;
     const res = getCmp();
     let list;
-    if (res) list = res.events.filter((e) => state.of.kinds.has(e.kind));
+    if (res) list = res.events.filter((e) => [...state.of.kinds].some((k) => MATCH[k](e)));
     else { const s = latest(), S = C.mkSets(state.scope); list = s.rows.filter((r) => C.inScope(r, S)).map((r) => ({ id: r.id, kind: 'same', sub: null, who: C.person(r), a: null, b: r, fromStage: r.stage, toStage: r.stage, row: r, overdueA: false, overdueB: C.isOverdue(r, s.date), reassignedFrom: null, dueChange: null })); }
     if (state.of.who) list = list.filter((e) => e.who === state.of.who);
     const q = state.of.q.trim().toLowerCase();
@@ -465,8 +469,6 @@
         <div class="fld"><b>Бренды</b>${checks('brands', allValues('brand'), state.scope.brands)}</div>
         <div class="fld"><b>Статус ТТ</b>${checks('tt', allValues('tt'), state.scope.tt)}</div>
         <div class="fld"><b>Этапы</b>${checks('stages', stageVals, state.scope.stages)}</div>
-        <div class="sub">Изменения применяются сразу. Сейчас — как у Анастасии вручную: 4 региона, ВкусВилл и Грейстор, «Новая ТТ», три этапа.</div>
-        <div><button class="btn btn-sm" data-act="resetScope">Вернуть как было</button></div>
       </div>`;
   }
 
@@ -483,10 +485,6 @@
         <table><thead><tr><th>Дата</th><th class="r">Задач</th><th class="r">В этапах</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Пока пусто</td></tr>'}</tbody></table>
         ${state.skippedLocal ? `<div class="note warn" style="margin-top:10px">${state.skippedLocal} локальных записей зашифрованы прежним паролем и не открылись.</div>` : ''}
         ${state.idbOff ? '<div class="note warn" style="margin-top:10px">Браузер не сохраняет данные (приватный режим?). Загруженное пропадёт после закрытия вкладки.</div>' : ''}
-        <details style="margin-top:14px"><summary class="sub" style="cursor:pointer">Опубликовать для всех и сменить пароль</summary>
-          <p class="sub">Выгрузки, загруженные кнопкой, лежат только в этом браузере. Скачайте vault.json и замените им файл в репозитории — тогда их увидят все. Поле пароля заполняйте только если хотите сменить пароль.</p>
-          <div class="row"><input type="password" id="newPw" placeholder="Новый пароль (необязательно)" autocomplete="new-password" style="width:230px"><button class="btn btn-sm" data-act="exportVault">Скачать vault.json</button></div>
-        </details>
       </div>`;
   }
 
@@ -569,22 +567,6 @@
     renderShell();
   }
 
-  async function exportVault() {
-    const pw = document.getElementById('newPw').value;
-    let vault;
-    try {
-      if (pw) vault = await V.buildVault(pw, sorted());
-      else {
-        const salt = Uint8Array.from(atob(state.saltId), (c) => c.charCodeAt(0));
-        const rec = await V.encryptObj(state.key, { snapshots: sorted() });
-        vault = { v: 1, kdf: 'PBKDF2-SHA256', iter: V.ITER, salt: state.saltId, iv: rec.iv, ct: rec.ct };
-        void salt;
-      }
-    } catch (e) { toast('Не удалось собрать файл: ' + e.message); return; }
-    download(new Blob([JSON.stringify(vault)], { type: 'application/json' }), 'vault.json');
-    toast('vault.json скачан — замените им файл в репозитории');
-  }
-
   function download(blob, name) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
@@ -628,9 +610,7 @@
       else if (a === 'saveSnap') saveSnap();
       else if (a === 'cancelSnap') { state.pending = null; renderModal(); }
       else if (a === 'closePop') { state.pop = null; renderPop(); }
-      else if (a === 'exportVault') exportVault();
       else if (a === 'report') report();
-      else if (a === 'resetScope') { state.scope = JSON.parse(JSON.stringify(C.DEFAULT_SCOPE)); saveScope(); cmpCache = null; renderView(); renderPop(); }
       return;
     }
     if (t.closest('#drop')) document.getElementById('fileIn').click();
@@ -644,6 +624,7 @@
       if (n.a >= n.b) { toast('Левая дата должна быть раньше правой'); renderShell(); return; }
       state.cmp = n; renderShell(); return;
     }
+    if (t.dataset.act === 'onlyMoved') { state.onlyMoved = t.checked; renderPeopleBody(); return; }
     if (t.dataset.act === 'owho') { state.of.who = t.value; renderObjList(); return; }
     if (t.dataset.act === 'snapDate') { if (state.pending) { state.pending.date = t.value; renderModal(); } return; }
     if (t.dataset.scope) {
