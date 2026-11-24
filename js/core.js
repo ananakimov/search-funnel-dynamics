@@ -5,6 +5,7 @@
 
   // Порядок этапов в воронке (слева направо). Если в выгрузке появится новый этап,
   // его нужно добавить сюда в правильное место.
+  const FIRST_THOUSAND = 'Первая тысяча';
   const STAGES = [
     'В работе',
     'Согласование',
@@ -12,6 +13,7 @@
     'Подготовительные работы',
     'Строительные работы',
     'Подготовка исполнительной документации',
+    FIRST_THOUSAND,
   ];
   const STAGE_RANK = {};
   STAGES.forEach((s, i) => (STAGE_RANK[s] = i));
@@ -172,10 +174,26 @@
   function isOverdue(r, date) { return !!(r.due && r.due < date); }
   function person(r) { return r.searcher || NO_PERSON; }
 
+  function openingDate(row) {
+    return row.openedAt && (!row.created || row.openedAt >= row.created) ? row.openedAt : null;
+  }
+
+  function rowAtDate(row, date) {
+    const openedAt = openingDate(row);
+    return openedAt && openedAt <= date && row.stage !== FIRST_THOUSAND
+      ? { ...row, stage: FIRST_THOUSAND }
+      : row;
+  }
+
+  function snapshotAtDate(snapshot) {
+    return { ...snapshot, rows: snapshot.rows.map((row) => rowAtDate(row, snapshot.date)) };
+  }
+
   function stageCounts(rows, S, date) {
     const byStage = {};
     let total = 0, overdue = 0, noDue = 0;
-    for (const r of rows) {
+    for (const row of rows) {
+      const r = rowAtDate(row, date);
       if (!inScope(r, S)) continue;
       total++;
       byStage[r.stage] = (byStage[r.stage] || 0) + 1;
@@ -186,20 +204,33 @@
   }
 
   /* ---------- сравнение двух выгрузок ---------- */
-  const KINDS = ['new', 'enter', 'advance', 'back', 'exit', 'same'];
+  const KINDS = ['new', 'enter', 'advance', 'back', 'exit', 'opened', 'same'];
 
-  function emptyN() { return { new: 0, enter: 0, advance: 0, back: 0, exit: 0, same: 0 }; }
+  function emptyN() { return { new: 0, enter: 0, advance: 0, back: 0, exit: 0, opened: 0, same: 0 }; }
 
-  function compare(A, B, scope) {
+  function compare(A, B, scope, snapshots = [B]) {
     const S = mkSets(scope);
+    A = snapshotAtDate(A);
+    B = snapshotAtDate(B);
     const ia = new Map(A.rows.map((r) => [r.id, r]));
     const ib = new Map(B.rows.map((r) => [r.id, r]));
-    const ids = new Set([...ia.keys(), ...ib.keys()]);
+    const openings = new Map();
+    const periodSnapshots = snapshots.filter((s) => A.date < s.date && s.date <= B.date)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    for (const snapshot of periodSnapshots) {
+      for (const row of snapshot.rows) {
+        if (openingDate(row) && row.openedAt > A.date && row.openedAt <= snapshot.date) {
+          openings.set(row.id, row);
+        }
+      }
+    }
+    const ids = new Set([...ia.keys(), ...ib.keys(), ...openings.keys()]);
 
     const events = [];
     let outsideNew = 0; // новые задачи, не попавшие в область (например, ещё «В работе»)
     const matrix = new Map(); // "from|to" → count
     const NEW = '— новая задача —', GONE = '— нет в выгрузке —', OTHER = '(другой регион/бренд/тип)';
+    const OPENED = FIRST_THOUSAND;
     const bump = (f, t) => { const k = f + '\u0001' + t; matrix.set(k, (matrix.get(k) || 0) + 1); };
 
     for (const id of ids) {
@@ -207,9 +238,12 @@
       const sa = !!a && inScope(a, S), sb = !!b && inScope(b, S);
       const fa = !!a && passFilter(a, S), fb = !!b && passFilter(b, S);
 
+      const opening = openings.get(id);
+      const opened = opening && passFilter(b || opening, S);
+
       // матрица переходов: берём задачи, у которых хотя бы с одной стороны отслеживаемый этап
       if (sa || sb) {
-        bump(!a ? NEW : fa ? a.stage : OTHER, !b ? GONE : fb ? b.stage : OTHER);
+        bump(!a ? NEW : fa ? a.stage : OTHER, opened && !sb ? OPENED : !b ? GONE : fb ? b.stage : OTHER);
       }
 
       let kind = null, sub = null;
@@ -230,9 +264,9 @@
         else if ((STAGE_RANK[b.stage] ?? 99) > (STAGE_RANK[a.stage] ?? -1)) sub = 'beyond';
         else sub = 'behind';
       }
-      if (!kind) continue;
+      if (!kind && !opened) continue;
 
-      const cur = b || a;
+      const cur = b || a || opening;
       const ev = {
         id, kind, sub,
         who: person(cur),
@@ -251,7 +285,15 @@
           days: a.due && b.due ? daysBetween(a.due, b.due) : null,
         };
       }
-      events.push(ev);
+      if (kind && !(opened && kind === 'exit')) events.push(ev);
+      if (opened) {
+        const row = { ...cur, openedAt: opening.openedAt };
+        events.push({
+          ...ev, kind: 'opened', sub: null, row,
+          toStage: OPENED,
+          leftScope: sa && !sb,
+        });
+      }
     }
 
     // по сотрудникам
@@ -297,7 +339,7 @@
       after: stageCounts(B.rows, S, B.date),
       n: sumN, outsideNew,
       matrix: [...matrix.entries()].map(([k, v]) => { const [f, t] = k.split('\u0001'); return { from: f, to: t, n: v }; }),
-      specials: { NEW, GONE, OTHER },
+      specials: { NEW, GONE, OTHER, OPENED },
     };
   }
 
@@ -344,6 +386,6 @@
     STAGES, STAGE_RANK, DEFAULT_SCOPE, COLS, REQUIRED, KINDS, NO_PERSON,
     normRegion, toISO, serialToISO, daysBetween, guessDateFromName,
     parseAoa, mkSets, passFilter, inScope, isOverdue, person,
-    stageCounts, compare, taskHistory, stageSince, trend, personTrend,
+    stageCounts, snapshotAtDate, compare, taskHistory, stageSince, trend, personTrend,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

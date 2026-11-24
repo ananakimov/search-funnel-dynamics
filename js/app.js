@@ -8,7 +8,7 @@
     key: null, saltId: null, vaultDates: new Set(), localDates: new Set(),
     snaps: [], scope: loadScope(), cmp: null,
     sort: { key: 'activity', dir: -1 }, pq: '',
-    of: { q: '', who: '', kinds: new Set(['arrived', 'advance', 'back', 'exit']) },
+    of: { q: '', who: '', kinds: new Set(['arrived', 'advance', 'back', 'exit', 'opened']) },
     drawer: null, pending: null, pop: null, onlyMoved: false, skippedLocal: 0, idbOff: false,
   };
 
@@ -21,7 +21,7 @@
   const short = (a) => String(a || '').replace(/^Россия,\s*/, '');
   const scopeStages = () => C.STAGES.filter((s) => state.scope.stages.includes(s));
   const stIdx = (s) => (C.STAGE_RANK[s] === undefined ? 0 : C.STAGE_RANK[s]);
-  const sorted = () => state.snaps.slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+  const sorted = () => state.snaps.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).map(C.snapshotAtDate);
 
   function loadScope() {
     try { const s = JSON.parse(localStorage.getItem('ft.scope')); if (s && s.regions && s.brands && s.tt && s.stages) return s; } catch (e) { /* нет доступа к localStorage */ }
@@ -38,7 +38,7 @@
   const trans = (f, t) => `${f ? stageChip(f) : '<span class="muted">новая</span>'}<span class="arrow">→</span>${t ? stageChip(t) : '<span class="muted">нет в выгрузке</span>'}`;
 
   function kindChip(ev) {
-    const m = { new: 'Новая задача', enter: 'Пришла в этап', advance: 'Продвинулась', back: 'Откат назад', same: 'Без движения' };
+    const m = { new: 'Новая задача', enter: 'Пришла в этап', advance: 'Продвинулась', back: 'Откат назад', opened: 'Открылась', same: 'Без движения' };
     const ex = { gone: 'Пропала из выгрузки', beyond: 'Ушла дальше по воронке', behind: 'Ушла на ранний этап', filter: 'Вышла из фильтра' };
     return `<span class="chip ${ev.kind}">${ev.kind === 'exit' ? ex[ev.sub] : m[ev.kind]}</span>`;
   }
@@ -66,7 +66,7 @@
     const key = state.cmp.a + '|' + state.cmp.b + '|' + JSON.stringify(state.scope) + '|' + s.map((x) => x.date + x.rows.length).join(',');
     if (!cmpCache || cmpCache.key !== key) {
       const A = s.find((x) => x.date === state.cmp.a), B = s.find((x) => x.date === state.cmp.b);
-      cmpCache = { key, res: C.compare(A, B, state.scope) };
+      cmpCache = { key, res: C.compare(A, B, state.scope, s) };
     }
     return cmpCache.res;
   }
@@ -182,7 +182,7 @@
     const inn = {}, out = {};
     for (const e of res.events) {
       if (['new', 'enter', 'advance', 'back'].includes(e.kind) && e.fromStage !== e.toStage) inn[e.toStage] = (inn[e.toStage] || 0) + 1;
-      if (['exit', 'advance', 'back'].includes(e.kind) && e.fromStage !== e.toStage) out[e.fromStage] = (out[e.fromStage] || 0) + 1;
+      if ((e.kind === 'opened' && e.leftScope) || (['exit', 'advance', 'back'].includes(e.kind) && e.fromStage !== e.toStage)) out[e.fromStage] = (out[e.fromStage] || 0) + 1;
     }
     return { inn, out };
   }
@@ -225,7 +225,7 @@
       ${opts.who ? `<td>${esc(ev.who)}</td>` : ''}
       <td>${trans(ev.fromStage, ev.toStage)}</td>
       <td>${kindChip(ev)}</td>
-      <td class="num">${dueCell(ev)}</td></tr>`;
+      ${ev.kind === 'opened' ? `<td>${fdy(ev.row.openedAt)}</td>` : opts.showDue === false ? '' : `<td class="num">${dueCell(ev)}</td>`}</tr>`;
   }
   function dueCell(ev) {
     const r = ev.b || ev.a;
@@ -241,19 +241,22 @@
     if (!res) return pgSingle();
     const { inn, out } = stageFlows(res);
     const arrived = res.n.new + res.n.enter;
-    const od = res.after.overdue - res.before.overdue;
     const people = res.people.slice().sort((a, b) => act(b) - act(a)).slice(0, 8);
+    const opened = res.events.filter((e) => e.kind === 'opened');
     const newOnes = res.events.filter((e) => e.kind === 'new' || e.kind === 'enter');
     return `
       <div class="page-h"><h1>Обзор</h1>
         <button class="btn" data-act="report">Скачать отчёт .xlsx</button></div>
-      <div class="grid g5">
-        ${kpi('В отслеживаемых этапах', res.after.total, `было ${res.before.total} · ${delta(res.after.total - res.before.total, null)}`)}
+      <div class="grid g4">
         ${kpi('Пришли в этапы', arrived, `${res.n.enter} из ранних этапов · ${res.n.new} новых задач`, 'hl')}
         ${kpi('Продвинулись дальше', res.n.advance, backCount(res) ? `и ${backCount(res)} вернулись на ранний этап` : 'возвратов нет')}
         ${kpi('Выбыли из этапов', res.n.exit, exitBreak(res))}
-        ${kpi('Просрочено по сроку', res.after.overdue, `было ${res.before.overdue} · ${delta(od, 'down')}`)}
+        ${openingKpi(res, res.n.opened)}
       </div>
+      ${opened.length ? `<div class="card mt"><div class="card-h"><h2>Открылись (${opened.length})</h2><a class="btn btn-sm" href="#/objects" data-kinds="opened">Все</a></div>
+        <div class="tw"><table><thead><tr><th>Объект</th><th>Поисковик</th><th>Дата открытия</th></tr></thead><tbody>
+        ${opened.map((e) => `<tr class="click" data-obj="${e.id}"><td>${esc(e.row.address || '—')}</td><td>${esc(e.who)}</td><td>${fdy(e.row.openedAt)}</td></tr>`).join('')}
+        </tbody></table></div></div>` : ''}
       <h2 class="mt" style="margin-bottom:10px">По этапам</h2>
       <div class="grid g3 stages">${scopeStages().map((s) => {
         const b = res.before.byStage[s] || 0, a = res.after.byStage[s] || 0;
@@ -277,7 +280,13 @@
 
   // «возврат» = откат внутри отслеживаемых этапов + уход на более ранний этап за их пределами
   const backCount = (res) => res.events.filter((e) => e.kind === 'back' || (e.kind === 'exit' && e.sub === 'behind')).length;
-  const act = (p) => p.n.new + p.n.enter + p.n.advance + p.n.back + p.n.exit;
+  const act = (p) => new Set(p.events.filter((event) => event.kind !== 'same').map((event) => event.id)).size;
+
+  function openingKpi(res, count) {
+    const value = res && res.n.opened ? count : '—';
+    const detail = value === '—' ? 'Нет данных об открытиях' : 'По дате первой тысячи выручки';
+    return kpi('Открылись', value, detail);
+  }
   function exitBreak(res) {
     const c = { gone: 0, beyond: 0, behind: 0, filter: 0 };
     res.events.forEach((e) => { if (e.kind === 'exit') c[e.sub]++; });
@@ -294,14 +303,14 @@
     const s = latest(), S = C.mkSets(state.scope);
     const cnt = C.stageCounts(s.rows, S, s.date);
     const by = new Map();
-    s.rows.forEach((r) => { if (C.inScope(r, S)) { const n = C.person(r); if (!by.has(n)) by.set(n, { name: n, total: 0, byStage: {}, od: 0 }); const p = by.get(n); p.total++; p.byStage[r.stage] = (p.byStage[r.stage] || 0) + 1; if (C.isOverdue(r, s.date)) p.od++; } });
+    s.rows.forEach((r) => { if (C.inScope(r, S)) { const n = C.person(r); if (!by.has(n)) by.set(n, { name: n, total: 0, byStage: {} }); const p = by.get(n); p.total++; p.byStage[r.stage] = (p.byStage[r.stage] || 0) + 1; } });
     const list = [...by.values()].sort((a, b) => b.total - a.total);
     return `
       <div class="page-h"><div><h1>Воронка на ${fdy(s.date)}</h1><p>${esc(scopeLine())}</p></div></div>
       <div class="note" style="margin-bottom:14px">Загружена одна выгрузка, поэтому динамики пока нет. Загрузите следующую — и здесь появится, кто что сделал за период.</div>
       <div class="grid g3 stages">${scopeStages().map((st) => `<div class="card stage-card"><i class="bar s${stIdx(st)}"></i><div class="nm">${esc(st)}</div><div class="big num">${cnt.byStage[st] || 0}</div></div>`).join('')}</div>
-      <div class="card mt"><div class="card-h"><h2>Сотрудники (${list.length})</h2>${legend()}</div><div class="tw"><table><thead><tr><th>Сотрудник</th><th class="r">Объектов</th><th>Этапы</th><th class="r">Просрочено</th></tr></thead><tbody>
-      ${list.map((p) => `<tr class="click" data-person="${esc(p.name)}"><td>${esc(p.name)}</td><td class="r num">${p.total}</td><td style="width:34%">${seg(p.byStage, p.total, list[0].total)}</td><td class="r num">${p.od || '·'}</td></tr>`).join('')}</tbody></table></div></div>`;
+      <div class="card mt"><div class="card-h"><h2>Сотрудники (${list.length})</h2>${legend()}</div><div class="tw"><table><thead><tr><th>Сотрудник</th><th class="r">Объектов</th><th>Этапы</th></tr></thead><tbody>
+      ${list.map((p) => `<tr class="click" data-person="${esc(p.name)}"><td>${esc(p.name)}</td><td class="r num">${p.total}</td><td style="width:34%">${seg(p.byStage, p.total, list[0].total)}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
 
   /* ---------- Сотрудники ---------- */
@@ -360,7 +369,7 @@
     const group = (title, kinds, hint) => {
       const list = p.events.filter((e) => kinds.includes(e.kind)).sort((a, b) => (a.row.address || '').localeCompare(b.row.address || '', 'ru'));
       if (!list.length) return '';
-      return `<div class="card mt" style="overflow:hidden"><div class="ev-h">${title}<span class="cnt">${list.length}</span>${hint ? `<span class="sub" style="font-weight:400">${hint}</span>` : ''}</div><div class="tw"><table><thead><tr><th>Объект</th><th>Этап</th><th>Что произошло</th><th>Срок</th></tr></thead><tbody>${list.map((e) => evRow(e)).join('')}</tbody></table></div></div>`;
+      return `<div class="card mt" style="overflow:hidden"><div class="ev-h">${title}<span class="cnt">${list.length}</span>${hint ? `<span class="sub" style="font-weight:400">${hint}</span>` : ''}</div><div class="tw"><table><thead><tr><th>Объект</th><th>Этап</th><th>Что произошло</th>${kinds.includes('opened') ? '<th>Дата открытия</th>' : ''}</tr></thead><tbody>${list.map((e) => evRow(e, { showDue: false })).join('')}</tbody></table></div></div>`;
     };
     const before = res ? p.before : null;
     return `
@@ -371,7 +380,7 @@
         ${kpi('Пришли в этапы', res ? arrived : '—', res ? `${p.n.enter} из ранних · ${p.n.new} новых` : 'нужна вторая выгрузка', res && arrived ? 'hl' : '')}
         ${kpi('Продвинулись', res ? p.n.advance : '—', res && p.n.back ? `${p.n.back} откатились` : '')}
         ${kpi('Выбыли', res ? p.n.exit : '—', res && p.n.same ? `${p.n.same} без движения` : '')}
-        ${kpi('Просрочено', p.after.overdue, before ? `было ${before.overdue} · ${delta(p.after.overdue - before.overdue, 'down')}` : '')}
+        ${openingKpi(res, p.n.opened)}
       </div>
       <div class="grid g2 mt" style="align-items:start">
         <div class="card"><div class="card-h"><h2>По этапам</h2></div><div class="card-b"><table><thead><tr><th>Этап</th>${res ? '<th class="r">Было</th>' : ''}<th class="r">Сейчас</th>${res ? '<th class="r">Δ</th>' : ''}</tr></thead><tbody>
@@ -379,16 +388,16 @@
         </tbody></table></div></div>
         <div class="card"><div class="card-h"><h2>Динамика по выгрузкам</h2>${legend()}</div><div class="card-b">${trendHtml(tr)}</div></div>
       </div>
-      ${res ? group('Пришли в этапы', ['new', 'enter']) + group('Продвинулись', ['advance']) + group('Откатились назад', ['back']) + group('Выбыли из этапов', ['exit'], 'ушли дальше, на ранний этап, в другой фильтр или пропали из выгрузки') + group('Без движения', ['same'], 'тот же этап, что и в прошлой выгрузке') : group('Объекты', ['same'])}`;
+      ${res ? group('Пришли в этапы', ['new', 'enter']) + group('Продвинулись', ['advance']) + group('Откатились назад', ['back']) + group('Открылись', ['opened']) + group('Выбыли из этапов', ['exit'], 'ушли дальше, на ранний этап, в другой фильтр или пропали из выгрузки') + group('Без движения', ['same'], 'тот же этап, что и в прошлой выгрузке') : group('Объекты', ['same'])}`;
   }
 
   /* ---------- Объекты ---------- */
   // кнопки-фильтры; «Новые» — часть «Пришли в этапы», поэтому кнопки могут перекрываться
-  const MATCH = { arrived: (e) => e.kind === 'new' || e.kind === 'enter', new: (e) => e.kind === 'new', advance: (e) => e.kind === 'advance', back: (e) => e.kind === 'back', exit: (e) => e.kind === 'exit', same: (e) => e.kind === 'same' };
+  const MATCH = { arrived: (e) => e.kind === 'new' || e.kind === 'enter', new: (e) => e.kind === 'new', advance: (e) => e.kind === 'advance', back: (e) => e.kind === 'back', exit: (e) => e.kind === 'exit', opened: (e) => e.kind === 'opened', same: (e) => e.kind === 'same' };
   function pgObjects() {
     const res = getCmp();
     // «Пришли в этапы» = новые задачи + пришедшие из ранних этапов — как на карточке в Обзоре
-    const kinds = [['arrived', 'Пришли в этапы'], ['new', 'Новые'], ['advance', 'Продвинулись'], ['back', 'Откат'], ['exit', 'Выбыли'], ['same', 'Без движения']];
+    const kinds = [['arrived', 'Пришли в этапы'], ['new', 'Новые'], ['advance', 'Продвинулись'], ['back', 'Откат'], ['exit', 'Выбыли'], ['opened', 'Открылись'], ['same', 'Без движения']];
     const who = [...new Set((res ? res.events.map((e) => e.who) : latest().rows.map((r) => C.person(r))))].sort((a, b) => a.localeCompare(b, 'ru'));
     return `<div class="page-h"><div><h1>Объекты</h1><p>${res ? `Что произошло с каждым объектом за ${fd(res.A.date)} → ${fd(res.B.date)}. Нажмите на строку — откроется история статусов.` : 'Объекты в отслеживаемых этапах.'}</p></div></div>
       <div class="bar-f"><input type="search" id="oq" placeholder="Адрес или номер задачи" value="${esc(state.of.q)}" data-act="oq">
@@ -406,9 +415,9 @@
     if (state.of.who) list = list.filter((e) => e.who === state.of.who);
     const q = state.of.q.trim().toLowerCase();
     if (q) list = list.filter((e) => String(e.id).includes(q) || (e.row.address || '').toLowerCase().includes(q));
-    const order = { new: 0, enter: 1, advance: 2, back: 3, exit: 4, same: 5 };
+    const order = { new: 0, enter: 1, advance: 2, back: 3, exit: 4, opened: 5, same: 6 };
     list.sort((a, b) => order[a.kind] - order[b.kind] || (a.who || '').localeCompare(b.who || '', 'ru'));
-    host.innerHTML = list.length ? `<div class="tw"><table><thead><tr><th>Объект</th><th>Поисковик</th><th>Этап</th><th>Что произошло</th><th>Срок</th></tr></thead><tbody>${list.slice(0, 400).map((e) => evRow(e, { who: true })).join('')}</tbody></table></div>${list.length > 400 ? `<div class="card-b sub">Показано 400 из ${list.length}. Уточните поиск.</div>` : `<div class="card-b sub">${list.length} ${plural(list.length, ['объект', 'объекта', 'объектов'])}</div>`}` : '<div class="empty">Ничего не найдено</div>';
+    host.innerHTML = list.length ? `<div class="tw"><table><thead><tr><th>Объект</th><th>Поисковик</th><th>Этап</th><th>Что произошло</th><th>${state.of.kinds.size === 1 && state.of.kinds.has('opened') ? 'Дата открытия' : 'Срок / дата открытия'}</th></tr></thead><tbody>${list.slice(0, 400).map((e) => evRow(e, { who: true })).join('')}</tbody></table></div>${list.length > 400 ? `<div class="card-b sub">Показано 400 из ${list.length}. Уточните поиск.</div>` : `<div class="card-b sub">${list.length} ${plural(list.length, ['объект', 'объекта', 'объектов'])}</div>`}` : '<div class="empty">Ничего не найдено</div>';
   }
 
   /* ---------- Карточка объекта ---------- */
@@ -577,15 +586,15 @@
     const st = scopeStages();
     const people = res.people.slice().sort((a, b) => act(b) - act(a)).map((p) => ({
       'Сотрудник': p.name, 'Было': p.before.total, 'Стало': p.after.total, 'Δ': p.after.total - p.before.total,
-      'Пришли (новые + из ранних этапов)': p.n.new + p.n.enter, 'Продвинулись': p.n.advance, 'Откатились': p.n.back, 'Выбыли': p.n.exit, 'Без движения': p.n.same,
+      'Пришли (новые + из ранних этапов)': p.n.new + p.n.enter, 'Продвинулись': p.n.advance, 'Откатились': p.n.back, 'Выбыли': p.n.exit, 'Открылись': res.n.opened ? p.n.opened : '', 'Без движения': p.n.same,
       'Просрочено было': p.before.overdue, 'Просрочено стало': p.after.overdue,
       ...Object.fromEntries(st.map((s) => [s + ' (стало)', p.after.byStage[s] || 0])),
     }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(people), 'Сотрудники');
-    const kindName = (e) => ({ new: 'Новая задача', enter: 'Пришла в этап', advance: 'Продвинулась', back: 'Откат назад', same: 'Без движения', exit: { gone: 'Пропала из выгрузки', beyond: 'Ушла дальше по воронке', behind: 'Ушла на ранний этап', filter: 'Вышла из фильтра' }[e.sub] }[e.kind]);
+    const kindName = (e) => ({ new: 'Новая задача', enter: 'Пришла в этап', advance: 'Продвинулась', back: 'Откат назад', opened: 'Открылась', same: 'Без движения', exit: { gone: 'Пропала из выгрузки', beyond: 'Ушла дальше по воронке', behind: 'Ушла на ранний этап', filter: 'Вышла из фильтра' }[e.sub] }[e.kind]);
     const evs = res.events.filter((e) => e.kind !== 'same').map((e) => ({
       'Номер задачи': e.id, 'Адрес': short(e.row.address), 'Сотрудник': e.who, 'Бренд': e.row.brand, 'Что произошло': kindName(e),
-      ['Этап ' + fd(res.A.date)]: e.fromStage || 'нет', ['Этап ' + fd(res.B.date)]: e.toStage || 'нет в выгрузке', 'Срок': e.row.due || '', 'Просрочен': e.overdueB ? 'да' : '',
+      ['Этап ' + fd(res.A.date)]: e.fromStage || 'нет', ['Этап ' + fd(res.B.date)]: e.toStage || 'нет в выгрузке', 'Дата открытия': e.kind === 'opened' ? e.row.openedAt : '', 'Срок': e.row.due || '', 'Просрочен': e.overdueB ? 'да' : '',
     }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(evs), 'События');
     download(new Blob([XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/octet-stream' }), `Динамика воронки ${res.A.date} — ${res.B.date}.xlsx`);

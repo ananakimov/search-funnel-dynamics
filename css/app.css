@@ -75,6 +75,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 24px 16px 64px; }
 .card-b { padding: 14px 16px 16px; }
 .grid { display: grid; gap: 14px; }
 .g5 { grid-template-columns: repeat(5, 1fr); }
+.g4 { grid-template-columns: repeat(4, 1fr); }
 .g3 { grid-template-columns: repeat(3, 1fr); }
 .g2 { grid-template-columns: 1fr 1fr; }
 .mt { margin-top: 18px; }
@@ -117,6 +118,7 @@ td.addr { max-width: 360px; }
 .seg { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--muted); min-width: 60px; }
 .seg i { display: block; height: 100%; }
 .s0 { background: var(--st0); } .s1 { background: var(--st1); } .s2 { background: var(--st2); }
+.s6 { background: var(--primary); }
 .s3 { background: var(--st3); } .s4 { background: var(--st4); } .s5 { background: var(--st5); }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted-fg); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -194,7 +196,7 @@ td.addr { max-width: 360px; }
 .empty { padding: 28px 16px; text-align: center; color: var(--muted-fg); }
 
 @media (max-width: 960px) {
-  .g5 { grid-template-columns: repeat(2, 1fr); }
+  .g5, .g4 { grid-template-columns: repeat(2, 1fr); }
   .g3, .g2 { grid-template-columns: 1fr; }
   .top-in { flex-wrap: wrap; height: auto; padding: 10px 16px; gap: 10px; }
   .top-r { margin-left: 0; width: 100%; flex-wrap: wrap; }
